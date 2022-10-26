@@ -52,6 +52,7 @@
 #include <time.h>
 #include <errno.h>
 #include <inttypes.h>
+#include <unistd.h>
 
 #include "timeline.h"
 
@@ -8098,13 +8099,29 @@ weston_load_module(const char *name, const char *entrypoint)
 	if (name == NULL)
 		return NULL;
 
-	if (name[0] != '/') {
-		len = weston_module_path_from_env(name, path, sizeof path);
-		if (len == 0)
-			len = snprintf(path, sizeof path, "%s/%s",
-				       LIBWESTON_MODULEDIR, name);
-	} else {
-		len = snprintf(path, sizeof path, "%s", name);
+	// Hint : 优先加载可执行程序下的动态库
+	char cwd[PATH_MAX/2];
+	int cnt = readlink("/proc/self/exe", (char*) cwd, PATH_MAX/2);
+    for(int i = cnt; i >= 0; --i)
+    {
+        if (cwd[i] == '/')
+        {
+            cwd[i] = '\0';
+            break;
+        }
+    }
+	len = snprintf(path, sizeof path, "%s/%s", cwd, name);
+
+	if (access(path, F_OK) == -1)
+	{
+		if (name[0] != '/') {
+			len = weston_module_path_from_env(name, path, sizeof path);
+			if (len == 0)
+				len = snprintf(path, sizeof path, "%s/%s",
+						LIBWESTON_MODULEDIR, name);
+		} else {
+			len = snprintf(path, sizeof path, "%s", name);
+		}
 	}
 
 	/* snprintf returns the length of the string it would've written,
@@ -8250,6 +8267,7 @@ static const char * const backend_map[] = {
 	[WESTON_BACKEND_RDP] =		"rdp-backend.so",
 	[WESTON_BACKEND_WAYLAND] =	"wayland-backend.so",
 	[WESTON_BACKEND_X11] =		"x11-backend.so",
+	[WESTON_BACKEND_CUSTOM] =   "custom-backend.so",
 };
 
 /** Load a backend into a weston_compositor

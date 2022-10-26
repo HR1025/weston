@@ -17,6 +17,7 @@ backend_headless_h = files('backend-headless.h')
 backend_rdp_h =      files('backend-rdp.h')
 backend_wayland_h =  files('backend-wayland.h')
 backend_x11_h =      files('backend-x11.h')
+backend_custom_h  =  files('backend-custom.h')
 
 xwayland_api_h = files('xwayland-api.h')
 

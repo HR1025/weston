@@ -1,9 +1,11 @@
 project('weston',
 	'c',
+	'cpp',
 	version: '10.0.2',
 	default_options: [
 		'warning_level=3',
 		'c_std=gnu99',
+		'cpp_std=c++14',
 		'b_lundef=true',
 	],
 	meson_version: '>= 0.52.1',
@@ -55,8 +57,13 @@ git_version_h = vcs_tag(
 config_h = configuration_data()
 
 cc = meson.get_compiler('c')
+cpp = meson.get_compiler('cpp')
 
-global_args = []
+global_c_args = [
+]
+global_cpp_args = [
+	'-fpermissive'
+]
 global_args_maybe = [
 	'-Wmissing-prototypes',
 	'-Wno-unused-parameter',
@@ -68,10 +75,14 @@ global_args_maybe = [
 ]
 foreach a : global_args_maybe
 	if cc.has_argument(a)
-		global_args += a
+		global_c_args += a
+	endif
+	if cpp.has_argument(a)
+		global_cpp_args += a
 	endif
 endforeach
-add_global_arguments(global_args, language: 'c')
+add_global_arguments(global_c_args, language: 'c')
+add_global_arguments(global_cpp_args, language: 'cpp')
 
 if cc.has_header_symbol('sys/sysmacros.h', 'major')
 	config_h.set('MAJOR_IN_SYSMACROS', 1)
@@ -121,7 +132,7 @@ config_h.set10('TEST_GL_RENDERER', get_option('test-gl-renderer'))
 
 backend_default = get_option('backend-default')
 if backend_default == 'auto'
-	foreach b : [ 'headless', 'x11', 'wayland', 'drm' ]
+	foreach b : [ 'headless', 'fbdev', 'x11', 'wayland', 'drm' ]
 		if get_option('backend-' + b)
 			backend_default = b
 		endif

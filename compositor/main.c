@@ -61,6 +61,7 @@
 #include <libweston/backend-fbdev.h>
 #include <libweston/backend-x11.h>
 #include <libweston/backend-wayland.h>
+#include <libweston/backend-custom.h>
 #include <libweston/windowed-output-api.h>
 #include <libweston/weston-log.h>
 #include <libweston/remoting-plugin.h>
@@ -661,6 +662,9 @@ usage(int error_code)
 #if defined(BUILD_X11_COMPOSITOR)
 			"\t\t\t\tx11-backend.so\n"
 #endif
+#if defined(BUILD_CUSTOM_COMPOSITOR)
+			"\t\t\t\tcustom-backend.so\n"
+#endif
 		"  --shell=MODULE\tShell module, defaults to desktop-shell.so\n"
 		"  -S, --socket=NAME\tName of socket to listen on\n"
 		"  -i, --idle-time=SECS\tIdle time in seconds\n"
@@ -869,29 +873,24 @@ handle_primary_client_destroyed(struct wl_listener *listener, void *data)
 static int
 weston_create_listening_socket(struct wl_display *display, const char *socket_name)
 {
-	char name_candidate[16];
-
 	if (socket_name) {
 		if (wl_display_add_socket(display, socket_name)) {
 			weston_log("fatal: failed to add socket: %s\n",
 				   strerror(errno));
 			return -1;
 		}
-
-		setenv("WAYLAND_DISPLAY", socket_name, 1);
-		return 0;
 	} else {
-		for (int i = 1; i <= 32; i++) {
-			sprintf(name_candidate, "wayland-%d", i);
-			if (wl_display_add_socket(display, name_candidate) >= 0) {
-				setenv("WAYLAND_DISPLAY", name_candidate, 1);
-				return 0;
-			}
+		socket_name = wl_display_add_socket_auto(display);
+		if (!socket_name) {
+			weston_log("fatal: failed to add socket: %s\n",
+				   strerror(errno));
+			return -1;
 		}
-		weston_log("fatal: failed to add socket: %s\n",
-			   strerror(errno));
-		return -1;
 	}
+
+	setenv("WAYLAND_DISPLAY", socket_name, 1);
+
+	return 0;
 }
 
 WL_EXPORT void *
@@ -904,13 +903,28 @@ wet_load_module_entrypoint(const char *name, const char *entrypoint)
 	if (name == NULL)
 		return NULL;
 
-	if (name[0] != '/') {
-		len = weston_module_path_from_env(name, path, sizeof path);
-		if (len == 0)
-			len = snprintf(path, sizeof path, "%s/%s", MODULEDIR,
-				       name);
-	} else {
-		len = snprintf(path, sizeof path, "%s", name);
+	// Hint : 优先加载可执行程序下的动态库
+	char cwd[PATH_MAX/2];
+	int cnt = readlink("/proc/self/exe", (char*) cwd, PATH_MAX/2);
+    for(int i = cnt; i >= 0; --i)
+    {
+        if (cwd[i] == '/')
+        {
+            cwd[i] = '\0';
+            break;
+        }
+    }
+	len = snprintf(path, sizeof path, "%s/%s", cwd, name);
+	if (access(path, F_OK) == -1)
+	{
+		if (name[0] != '/') {
+			len = weston_module_path_from_env(name, path, sizeof path);
+			if (len == 0)
+				len = snprintf(path, sizeof path, "%s/%s", MODULEDIR,
+						name);
+		} else {
+			len = snprintf(path, sizeof path, "%s", name);
+		}
 	}
 
 	/* snprintf returns the length of the string it would've written,
@@ -976,6 +990,24 @@ wet_get_binary_path(const char *name, const char *dir)
 {
 	char path[PATH_MAX];
 	size_t len;
+
+	// Hint : 优先加载可执行程序下的其它插件
+	char cwd[PATH_MAX/2];
+	int cnt = readlink("/proc/self/exe", (char*) cwd, PATH_MAX/2);
+    for(int i = cnt; i >= 0; --i)
+    {
+        if (cwd[i] == '/')
+        {
+            cwd[i] = '\0';
+            break;
+        }
+    }
+	len = snprintf(path, sizeof path, "%s/%s", cwd, name);
+
+	if (access(path, F_OK) != -1)
+	{
+		return strdup(path);
+	}
 
 	len = weston_module_path_from_env(name, path, sizeof path);
 	if (len > 0)
@@ -2683,8 +2715,8 @@ static int
 headless_backend_output_configure(struct weston_output *output)
 {
 	struct wet_output_config defaults = {
-		.width = 1024,
-		.height = 640,
+		.width = 1920,
+		.height = 1080,
 		.scale = 1,
 		.transform = WL_OUTPUT_TRANSFORM_NORMAL
 	};
@@ -2757,6 +2789,86 @@ load_headless_backend(struct weston_compositor *c,
 			return -1;
 	}
 
+	return 0;
+}
+
+static int
+load_custom_backend(struct weston_compositor *c,
+		      int *argc, char **argv, struct weston_config *wc)
+{
+	struct weston_custom_backend_config config;
+	struct weston_config_section *section = NULL;
+	memset(&config, 0, sizeof(struct weston_custom_backend_config));
+
+	// it's dummy, actually not use, just show all options it support and the default value
+	const struct weston_option options[] = {
+		{ WESTON_OPTION_INTEGER, "width",       1920, NULL },
+		{ WESTON_OPTION_INTEGER, "height",      1080, NULL },
+		{ WESTON_OPTION_INTEGER, "scale",       1,    NULL },
+		{ WESTON_OPTION_INTEGER, "refresh",     60,   NULL },
+		{ WESTON_OPTION_BOOLEAN, "use-pixman",  1,    NULL },
+		{ WESTON_OPTION_BOOLEAN, "use-gl",      0,    NULL },
+	};
+
+	struct wet_output_config *parsed_options = wet_init_parsed_options(c);
+	if (!parsed_options)
+		return -1;
+
+	// 渲染配置
+	{
+		bool use_pixman = false, use_gl = false;
+		section = weston_config_get_section(wc, "core", NULL, NULL);
+		weston_config_section_get_bool(section, "use-pixman", &use_pixman, false);
+		weston_config_section_get_bool(section, "use-gl", &use_gl, false);
+		if (use_gl && use_pixman)
+		{
+			weston_log("Cannot use both pixman and gl, please choose one of them.");
+			abort();
+		}
+		if (use_gl)
+		{
+			weston_log("custom-backend now no support OpenGl Render");
+			abort();
+		}
+		if (use_pixman)
+		{
+			config.render_mode = CUSTOM_RENDER_MODE_CPU;
+		}
+	}
+
+	// 输出配置
+	{
+		section = weston_config_get_section(wc, "custom", NULL, NULL);
+		weston_config_section_get_uint(section, "height", &(config.output_config.height), 0);
+		weston_config_section_get_uint(section, "width", &(config.output_config.width), 0);
+		weston_config_section_get_uint(section, "scale", &(config.output_config.scale), 0);
+		weston_config_section_get_uint(section, "refresh", &(config.output_config.refresh), 0);
+	}	
+
+	config.base.struct_version = WESTON_CUSTOM_BACKEND_CONFIG_VERSION;
+	config.base.struct_size    = sizeof(struct weston_custom_backend_config);
+
+	// FIXME : 临时解决一些野指针崩溃问题
+	// 不调用此函数,存在一些指针未被赋值但使用的情况
+	wet_set_simple_head_configurator(c, headless_backend_output_configure);
+
+	int ret = weston_compositor_load_backend(c, WESTON_BACKEND_CUSTOM, &config.base);
+
+	if (ret < 0)
+	{
+		return ret;
+	}
+	else
+	{
+		const struct weston_windowed_output_api *api;	
+		api = weston_windowed_output_get_api(c);
+		if (!api) {
+			weston_log("Cannot use weston_windowed_output_api.\n");
+			return -1;
+		}
+		if (api->create_head(c, "custom") < 0)
+			return -1;
+	}
 	return 0;
 }
 
@@ -3152,6 +3264,8 @@ load_backend(struct weston_compositor *compositor, const char *backend,
 		return load_x11_backend(compositor, argc, argv, config);
 	else if (strstr(backend, "wayland-backend.so"))
 		return load_wayland_backend(compositor, argc, argv, config);
+	else if (strstr(backend, "custom-backend.so"))
+		return load_custom_backend(compositor, argc, argv, config);
 
 	weston_log("Error: unknown backend \"%s\"\n", backend);
 	return -1;

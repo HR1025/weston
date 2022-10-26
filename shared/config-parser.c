@@ -78,6 +78,22 @@ open_config_file(struct weston_config *c, const char *name)
 	/* Precedence is given to config files in the home directory,
 	 * then to directories listed in XDG_CONFIG_DIRS. */
 
+	static  char path[PATH_MAX];
+	char cwd[PATH_MAX];
+	int cnt = readlink("/proc/self/exe", (char*) cwd, PATH_MAX);
+	for(int i = cnt; i >= 0; --i)
+	{
+		if (cwd[i] == '/')
+		{
+			cwd[i] = '\0';
+			break;
+		}
+	}
+	snprintf(path, sizeof path, "%s/%s", cwd, name);
+	fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd >= 0)
+		return fd;
+
 	/* $XDG_CONFIG_HOME */
 	if (config_dir) {
 		snprintf(c->path, sizeof c->path, "%s/%s", config_dir, name);
@@ -475,7 +491,26 @@ WL_EXPORT
 const char *
 weston_config_get_full_path(struct weston_config *config)
 {
-	return config == NULL ? NULL : config->path;
+	static  char path[PATH_MAX];
+	char cwd[PATH_MAX];
+	int cnt = readlink("/proc/self/exe", (char*) cwd, PATH_MAX);
+	for(int i = cnt; i >= 0; --i)
+	{
+		if (cwd[i] == '/')
+		{
+			cwd[i] = '\0';
+			break;
+		}
+	}
+	snprintf(path, sizeof path, "%s/weston.ini", cwd);
+	if (access(path, F_OK) == -1)
+	{
+		return config == NULL ? NULL : config->path;
+	}
+	else
+	{
+		return path;
+	}
 }
 
 WL_EXPORT
